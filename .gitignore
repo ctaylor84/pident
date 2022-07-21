@@ -1,0 +1,12 @@
+__pycache__
+data/
+util/__pycache__
+plots/
+graphs/
+group_series/
+model_states/
+model_states_rgs/
+model_states_ncv/
+model_states_forecast/
+model_benchmarks/
+*.out
