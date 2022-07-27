@@ -283,9 +283,6 @@ def PrEstimate(pairs, model_name="svm_rbf", pair_type="full", cv_folds=3,
 
     x_all = np.stack((pairs[:,0], pairs[:,2], 
                       pairs[:,1] - pairs[:,0]), axis=1)
-    # x_all = np.stack((pairs[:,0], pairs[:,2],
-    #                   pairs[:,1] - pairs[:,0],
-    #                  (pairs[:,1] - pairs[:,0]) / pairs[:,2]), axis=1)
     x_all = scaler.transform(x_all)
 
     if model_name.split("_")[0] == "svm":
@@ -375,13 +372,6 @@ def PlotMap(single_model=None, pair_type="full", cv_folds=3, n_threads=10):
         scores = list()
         for rgs in estimators:
             scores.append(PrMapHelper(x_all_scaled, rgs, dist_func))
-            # chunks = list()
-            # for i in range(len(chunk_range)-1):
-            #     chunks.append((x_all[chunk_range[i]:chunk_range[i+1]], rgs, dist_func))
-            # pool = mp.Pool(processes=n_threads)
-            # pool_out = pool.starmap(PrMapHelper, chunks)
-            # pool.close()
-            # scores.append(np.concatenate(pool_out))
 
         scores = np.stack(scores)
         scores = np.mean(scores, axis=0)
@@ -389,9 +379,6 @@ def PlotMap(single_model=None, pair_type="full", cv_folds=3, n_threads=10):
         scores -= np.amin(scores)
         scores /= np.amax(scores)
         scores_all.append(scores)
-
-    # epsilon = 7.0 / 3 - 4.0 / 3 - 1
-    # scores = - np.log(epsilon + scores / (1 - scores + epsilon))
 
     cm = plt.cm.RdBu
     model_titles = {"gb":"Gradient Boosting Regressor", "gb_pr":"Gradient Boosting Classifier",
@@ -404,8 +391,6 @@ def PlotMap(single_model=None, pair_type="full", cv_folds=3, n_threads=10):
         for i in range(len(models)):
             ax_l[i].contourf(xg[0], xg[1], scores_all[i], cmap=cm, alpha=0.8, levels=10,
                              vmin=np.amin(scores_all[i]), vmax=np.amax(scores_all[i]))
-            # ax_l[i].imshow(scores_all[i], cmap=cm, alpha=0.8,
-            #                vmin=np.amin(scores_all[i]), vmax=np.amax(scores_all[i]))
             if models[i][-4:] == "-ncv":
                 ax_l[i].title.set_text(model_titles[models[i][:-4]])
             else:
@@ -420,7 +405,7 @@ def PlotMap(single_model=None, pair_type="full", cv_folds=3, n_threads=10):
     plt.tight_layout()
     plt.show()
 
-if __name__ == "__main__":
+def Main():
     parser = argparse.ArgumentParser(description="PIDENT Train")
     parser.add_argument("-t", default=3, dest="threads", type=int, help="Number of threads (integer)")
     parser.add_argument("-m", default="train", dest="mode", choices=["train","train_cv","train_ncv","results","plot_map"], help="Program mode")
@@ -449,4 +434,6 @@ if __name__ == "__main__":
         PrCrossValResults(model_name)
     elif mode == "plot_map":
         PlotMap(n_threads=args["threads"])
-    
+
+if __name__ == "__main__":
+    Main()

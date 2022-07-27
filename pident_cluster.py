@@ -240,7 +240,15 @@ def BenchmarkFull(estimator, pair_type="full", n_fold=-1, n_threads=10, max_fold
                                 data_cache=data_cache, fold_set=fold_sets[fold_n], series_length=series_length)
                 dist_mat = PrCalc(group_mat, estimator=estimator, pair_type=pair_type, 
                                   n_fold=fold_n, n_threads=n_threads, cv_folds=max_folds)
-                assign_scores_c = list()
+                
+                clustering = HCluster(dist_mat, n_clusters=pig_count, linkage="complete")
+                assign_score, _ = AssignmentMatch(group_mat, clustering.labels_, 
+                                                  pig_count=pig_count, plot_mode=False)
+                scores.append(assign_score)
+                with open(out_dir + "/" + out_name + ".dat", "wb") as fh:
+                    pickle.dump(np.stack(scores), fh)
+
+                # Generate clusterings for forecasting
                 pred_indices_c = list()
                 for series_trim in range(BENCHMARK_MIN_TRIM, series_length+1):
                     dist_mat_i = np.copy(dist_mat)
@@ -250,17 +258,12 @@ def BenchmarkFull(estimator, pair_type="full", n_fold=-1, n_threads=10, max_fold
                         dist_mat_i = dist_mat_i[:group_mat_i.shape[0],:group_mat_i.shape[0]]
                     if np.unique(group_mat_i[:,2]).shape[0] == pig_count:
                         clustering = HCluster(dist_mat_i, n_clusters=pig_count, linkage="complete")
-                        assign_score, pred_indices_c_i = AssignmentMatch(group_mat_i, clustering.labels_, 
+                        _, pred_indices_c_i = AssignmentMatch(group_mat_i, clustering.labels_, 
                                                                         pig_count=pig_count, plot_mode=False)
-                        assign_scores_c.append(assign_score)
                         pred_indices_c.append(pred_indices_c_i)
                     else:
-                        assign_scores_c.append(None)
                         pred_indices_c.append(None)
-                scores.append(assign_scores_c)
                 pred_indices.append(pred_indices_c)
-                with open(out_dir + "/" + out_name + ".dat", "wb") as fh:
-                    pickle.dump(np.stack(scores), fh)
                 with open(out_dir + "_indices/" + out_name + "_indices.dat", "wb") as fh:
                     pickle.dump(pred_indices, fh)
 
@@ -280,20 +283,9 @@ def BenchmarkCompare(n_folds=3):
                 file_name = estimator + "_benchmark_" + file_code + "_" + str(fold_n+1) + ".dat"
                 try:
                     with open("model_benchmarks/" + estimator + "/" + file_name, "rb") as fh:
-                        file_in = pickle.load(fh)
-                        if len(file_in.shape) > 1:
-                            file_in = file_in[:,-1]
-                        fold_scores.append(file_in)
+                        fold_scores.append(pickle.load(fh))
                 except FileNotFoundError:
                     continue
-            if len(fold_scores) == 0:
-                continue
-            elif len(fold_scores) == 1:
-                fold_scores = fold_scores[0]
-            else:
-                fold_scores = np.concatenate(fold_scores)
-            # if np.isinf(fold_scores).any():
-            #     fold_scores = fold_scores[np.isinf(fold_scores) == False]
             mean_results[estimator][file_code] = np.mean(fold_scores)
             err_results[estimator][file_code] = np.std(fold_scores) / np.sqrt(fold_scores.shape[0])
             df_dict["Sample Rate"].append(sample_rate)
