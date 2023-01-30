@@ -19,6 +19,7 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import cross_validate
 from sklearn.model_selection import PredefinedSplit
 from sklearn.model_selection import GroupKFold
+from sklearn.metrics import r2_score
 from scipy.optimize import linear_sum_assignment
 from util.forecast_util import GenerateDataset
 
@@ -87,7 +88,7 @@ def TrainCV(dataset, model_name, std_pred=False):
         fold_n += 1
     return cv_out
 
-def TrainNCV(dataset, model_name, std_pred=False, n_threads=5):
+def TrainNCV(dataset, model_name, params=None, std_pred=False, n_threads=5):
     if not std_pred:
         data_x = np.copy(dataset["x"])
     else:
@@ -101,10 +102,10 @@ def TrainNCV(dataset, model_name, std_pred=False, n_threads=5):
     nested_out["scaler"] = x_scaler
 
     cv_outer = PredefinedSplit(dataset["folds"])
-    current_fold = 1
+    current_fold = 0
     fold_count = np.amax(dataset["folds"]) + 1
     for train_ix, test_ix in cv_outer.split():
-        print("Starting fold", current_fold, "/", fold_count)
+        print("Starting fold", current_fold+1, "/", fold_count)
         X_train, X_test = data_x[train_ix, :], data_x[test_ix, :]
         y_train, y_test = data_y[train_ix], data_y[test_ix]
         
@@ -120,8 +121,16 @@ def TrainNCV(dataset, model_name, std_pred=False, n_threads=5):
                 y_train_std = y_train[:,1]
             param_grid = {"n_estimators":[50,75,100,125,150,175,200],
                           "max_depth":[2,4,6,8,10,12]}
+            param_grid_std = param_grid
         elif model_name == "dummy":
             rgs = DummyRegressor()
+
+        if params != None:
+            if std_pred and model_name == "gb":
+                param_grid = {k: [v] for k, v in params[current_fold][0].items()}
+                param_grid_std = {k: [v] for k, v in params[current_fold][1].items()}
+            else:
+                param_grid = {k: [v] for k, v in params[current_fold].items()}
 
         if std_pred and model_name == "gb":
             cv_inner_mean = GroupKFold(n_splits=5).split(X_train, y_train_mean, dataset["groups"][train_ix])
@@ -133,7 +142,7 @@ def TrainNCV(dataset, model_name, std_pred=False, n_threads=5):
             if std_pred and model_name == "gb":
                 gridsearch_mean = GridSearchCV(rgs, param_grid, scoring="neg_root_mean_squared_error", 
                                         cv=cv_inner_mean, n_jobs=n_threads, refit=True)
-                gridsearch_std = GridSearchCV(rgs_std, param_grid, scoring="neg_root_mean_squared_error", 
+                gridsearch_std = GridSearchCV(rgs_std, param_grid_std, scoring="neg_root_mean_squared_error", 
                                         cv=cv_inner_std, n_jobs=n_threads, refit=True)
                 gs_result_mean = gridsearch_mean.fit(X_train, y_train_mean)
                 gs_result_std = gridsearch_std.fit(X_train, y_train_std)
@@ -149,15 +158,23 @@ def TrainNCV(dataset, model_name, std_pred=False, n_threads=5):
                 nested_out["gs_results"].append(gs_result.cv_results_)
         else:
             if std_pred:
-                gridsearch = MultiTaskLassoCV(max_iter=10000, random_state=555)
-                gs_result = gridsearch.fit(X_train, y_train)
-                best_model = MultiTaskLasso(alpha=gs_result.alpha_, max_iter=10000, random_state=555)
+                if params == None:
+                    gridsearch = MultiTaskLassoCV(max_iter=10000, random_state=555)
+                    gs_result = gridsearch.fit(X_train, y_train)
+                    lasso_alpha = gs_result.alpha_
+                else:
+                    lasso_alpha = params[current_fold]["alpha"]
+                best_model = MultiTaskLasso(alpha=lasso_alpha, max_iter=10000, random_state=555)
             else:
-                gridsearch = LassoCV(max_iter=10000, random_state=555)
-                gs_result = gridsearch.fit(X_train, y_train)
-                best_model = Lasso(alpha=gs_result.alpha_, max_iter=10000, random_state=555)
+                if params == None:
+                    gridsearch = LassoCV(max_iter=10000, random_state=555)
+                    gs_result = gridsearch.fit(X_train, y_train)
+                    lasso_alpha = gs_result.alpha_
+                else:
+                    lasso_alpha = params[current_fold]["alpha"]
+                best_model = Lasso(alpha=lasso_alpha, max_iter=10000, random_state=555)
             best_model.fit(X_train, y_train)
-            nested_out["best_params"].append({"alpha":gs_result.alpha_})
+            nested_out["best_params"].append({"alpha":lasso_alpha})
 
         if std_pred and model_name == "gb":
             y_pred_mean = best_model[0].predict(X_test)
@@ -214,12 +231,30 @@ def TestCV(dataset, model, std_pred=False):
         test_out["test_mean_rmse_stdpred"] = np.mean(test_out["test_fold_rmse_stdpred"])
     return test_out
 
+def MeanRelError(y_true, y_pred):
+    return np.mean(np.abs((y_true - y_pred) / y_pred))
+
+def GetMetrics(y_true_folds, y_pred_folds):
+    fold_scores = defaultdict(list)
+    for fold_true, fold_pred in zip(y_true_folds, y_pred_folds):
+        fold_scores["r2"].append(r2_score(fold_true, fold_pred))
+        fold_scores["mre"].append(MeanRelError(fold_true, fold_pred))
+        fold_scores["rmse"].append(np.sqrt(np.mean((fold_true - fold_pred) ** 2)))
+    print("Matched individual RMSE fold scores:", fold_scores["rmse"])
+    print("Matched individual RMSE average score:", np.mean(fold_scores["rmse"]))
+    print("Matched individual R2 fold scores:", fold_scores["r2"])
+    print("Matched individual R2 average score:", np.mean(fold_scores["r2"]))
+    print("Matched individual MRE fold scores:", fold_scores["mre"])
+    print("Matched individual MRE average score:", np.mean(fold_scores["mre"]))
+    return fold_scores
+
 def MatchIndividualWeights(model):
-    fold_scores = list()
-    all_scores = list()
+    all_true = list()
+    all_pred = list()
     for true, pred, groups, steps in zip(model["true"], model["pred"], 
                                          model["groups"], model["steps"]):
-        group_scores = list()
+        fold_true = list()
+        fold_pred = list()
         for group_i in np.unique(groups):
             group_indices = groups == group_i
             for step_i in np.unique(steps[group_indices]):
@@ -231,16 +266,11 @@ def MatchIndividualWeights(model):
                     for j in range(pred_step.shape[0]):
                         dist_mat[i,j] = (true_step[i] - pred_step[j]) ** 2
                 true_indices, pred_indices = linear_sum_assignment(dist_mat)
-                group_scores.append(dist_mat[true_indices,pred_indices].flatten())
-        all_scores += group_scores
-        group_scores = np.concatenate(group_scores)
-        fold_scores.append(np.sqrt(np.mean(group_scores)))
-    print("Matched individual RMSE fold scores:", fold_scores)
-    print("Matched individual RMSE average score:", np.mean(fold_scores))
-    all_scores = np.concatenate(all_scores)
-    all_scores = np.sort(all_scores)
-    print(all_scores[-10:])
-    return fold_scores
+                fold_true.append(true_step[true_indices])
+                fold_pred.append(pred_step[pred_indices])
+        all_true.append(np.concatenate(fold_true))
+        all_pred.append(np.concatenate(fold_pred))
+    return all_true, all_pred
 
 def EstimateIndividualWeights(model, indv_dataset):
     rng = np.random.Generator(np.random.PCG64(555))
@@ -254,12 +284,13 @@ def EstimateIndividualWeights(model, indv_dataset):
         indv_true_groups.append(indv_dataset["groups"][test_ix])
         indv_true_steps.append(indv_dataset["steps"][test_ix])
 
-    fold_scores = list()
-    fold_sizes = list()
+    all_true = list()
+    all_pred = list()
     model_iter = zip(indv_true_y, indv_true_groups, indv_true_steps, 
                      model["pred"], model["groups"], model["steps"], model["counts"])
     for true, true_groups, true_steps, pred, pred_groups, pred_steps, pred_counts in model_iter:
-        group_scores = list()
+        fold_true = list()
+        fold_pred = list()
         for group_i in np.unique(pred_groups):
             group_indices_true = true_groups == group_i
             group_indices_pred = pred_groups == group_i
@@ -278,18 +309,19 @@ def EstimateIndividualWeights(model, indv_dataset):
                     for j in range(pred_step.shape[0]):
                         dist_mat[i,j] = (true_step[i] - pred_step[j]) ** 2
                 true_indices, pred_indices = linear_sum_assignment(dist_mat)
-                group_scores.append(dist_mat[true_indices,pred_indices])
-        group_scores = np.concatenate(group_scores)
-        fold_scores.append(np.sqrt(np.mean(group_scores)))
-        fold_sizes.append(group_scores.shape[0])
-    print("Estimated individual RMSE fold scores:", fold_scores)
-    print("Estimated individual RMSE average score:", np.mean(fold_scores))
-    return fold_scores
+                fold_true.append(true_step[true_indices])
+                fold_pred.append(pred_step[pred_indices])
+        all_true.append(np.concatenate(fold_true))
+        all_pred.append(np.concatenate(fold_pred))
+    return all_true, all_pred
 
-def ModelComparison(nested_cv=False):
+def ModelComparison(metric="rmse", nested_cv=False):
     figure_colours = ["red", "blue", "limegreen", "purple", "orange", 
                       "brown", "darkred", "darkblue", "green"]
     format_modes = ["true", "pred", "group"]
+    format_markers = {"true":"x", "pred":"+", "group":"d"}
+    metric_full = dict({"rmse":"RMSE (Kg)", "mre":"Mean relative error", "r2":"R2"})
+    metric_limits = dict({"rmse":(10-2, 50+2)})
     pig_counts = [10, 20, 30, 40, 50]
     sample_rates = [1.0, 2.0, 3.0, 4.0]
     models = ["lasso", "rf", "gb"]
@@ -310,6 +342,7 @@ def ModelComparison(nested_cv=False):
             # df_dict["Pig count"].append(pig_count)
             df_dict["Input Type"].append(format_mode.capitalize())
             df_dict["Model"].append(models_full[model])
+            marker = format_markers[format_mode]
             for pig_count in pig_counts:
                 file_code = "_" + str(pig_count) + "-" + str(sample_rate).replace(".",",")
                 model_name = validation_type + "_" + model + "_" + format_mode
@@ -320,13 +353,13 @@ def ModelComparison(nested_cv=False):
                     print("Missing model:", model_name + file_code)
                     continue
                 # print(model, model_data["best_params"])
-                score_series.append(model_data["eval_mean_rmse"])
-                all_scores.append(model_data["eval_mean_rmse"])
+                score_series.append(model_data["eval_mean_" + metric])
+                all_scores.append(model_data["eval_mean_" + metric])
                 pig_counts_series.append(pig_count)
-                df_dict[str(pig_count) + "-pig RMSE (Kg)"].append(model_data["eval_mean_rmse"])
-                type_scores[format_mode].append(model_data["eval_mean_rmse"])
+                df_dict[str(pig_count) + "-pig RMSE (Kg)"].append(model_data["eval_mean_" + metric])
+                type_scores[format_mode].append(model_data["eval_mean_" + metric])
             plot_label = format_mode + "_" + model
-            ax_l[plot_i].plot(pig_counts_series, score_series, c=figure_colours[series_i], label=plot_label, marker="x")
+            ax_l[plot_i].plot(pig_counts_series, score_series, c=figure_colours[series_i], label=plot_label, marker=marker)
             ax_l[plot_i].title.set_text("Sample rate: " + str(sample_rate))
             ax_l[plot_i].set_xlim((10-2, 50+2))
             ax_l[plot_i].yaxis.grid(True)
@@ -334,12 +367,19 @@ def ModelComparison(nested_cv=False):
     
     min_score = min(all_scores)
     max_score = max(all_scores)
+    if metric == "rmse":
+        lim_offset = 0.5
+    elif metric == "mre":
+        lim_offset = 0.005
+    elif metric == "r2":
+        lim_offset = 0.025
     for plot_i in range(ax_l.shape[0]):
-        ax_l[plot_i].set_ylim(min_score - 0.5, max_score + 0.5)
+        ax_l[plot_i].set_ylim(min_score - lim_offset, max_score + lim_offset)
 
     plt.setp(ax, xticks=[10,20,30,40,50])
     fig.text(0.46, 0.02, "Pig count", ha="center", va="center", fontsize="medium")
-    fig.text(0.02, 0.5, "RMSE (Kg)", ha="center", va="center", rotation="vertical", fontsize="medium")
+    txt_lft_algn = 0.02 if metric != "mre" else 0.01
+    fig.text(txt_lft_algn, 0.5, metric_full[metric], ha="center", va="center", rotation="vertical", fontsize="medium")
     handles, labels = ax_l[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc=7, title="Model", fontsize="medium", frameon=False)
     plt.subplots_adjust(left=0.05, right=0.87, top=0.95, bottom=0.06)
@@ -352,7 +392,7 @@ def ModelComparison(nested_cv=False):
     group_avg = np.mean(type_scores["group"])
     print("True average score:", true_avg, "Pred average score:", pred_avg, "Group average score:", group_avg)
     print("Group - pred:", group_avg - pred_avg, "Pred - true:", pred_avg - true_avg)
-    pd_df.to_csv("plots/forecast_comparison.csv")
+    pd_df.to_csv("plots/forecast_comparison_ " + metric + ".csv")
     sys.exit(0)
 
 def Main():
@@ -361,7 +401,8 @@ def Main():
     parser.add_argument("-c", default=10, dest="pig_count", type=int, help="Number of pigs")
     parser.add_argument("-r", default=1.0, dest="sample_rate", choices=[1.0,2.0,3.0,4.0], type=float, help="Sample rate")
     parser.add_argument("-s", default=False, action="store_true", dest="save_out", help="Save model performance (flag only)")
-    parser.add_argument("--compare", default=False, action="store_true", dest="compare", help="Model comparison mode (flag only)")
+    parser.add_argument("-l", default=False, action="store_true", dest="load", help="Load previous parameters (flag only)")
+    parser.add_argument("--compare", default="none", dest="compare", choices=["none", "rmse","mre","r2"], help="Comparison mode")
 
     parser.add_argument("-m", default="rf", dest="model", choices=["rf","gb","lasso","dummy"], help="Prediction model")
     parser.add_argument("-n", default=False, action="store_true", dest="nested_cv", help="Nested CV mode (flag only)")
@@ -378,8 +419,12 @@ def Main():
     parser.add_argument("--min_pigs", default=1.0, dest="min_pigs", type=float, help="Minimum pigs ratio (float)")
     args = vars(parser.parse_args())
 
-    if args["compare"]:
-        ModelComparison(nested_cv=args["nested_cv"])
+    file_code = "_" + str(args["pig_count"]) + "-" + str(args["sample_rate"]).replace(".",",")
+    validation_type = "ncv" if args["nested_cv"] else "cv"
+    model_name = validation_type + "_" + args["model"] + "_" + args["format_mode"]
+
+    if args["compare"] != "none":
+        ModelComparison(metric=args["compare"], nested_cv=True)
 
     print("Generating dataset...")
     dataset = GenerateDataset(args["format_mode"], args["tj_model"],
@@ -393,10 +438,18 @@ def Main():
                               ff_frag_size=args["frag_size"],
                               ff_horizon=args["horizon"])
 
+    if args["load"]:
+        with open("model_states_forecast/" + model_name + file_code + ".dat", "rb") as fh:
+            loaded_model = pickle.load(fh)
+        loaded_params = loaded_model["best_params"]
+        print("Old scores:", loaded_model["eval_fold_rmse"])
+    else:
+        loaded_params = None
+
     std_pred = args["format_mode"] == "group"
     if args["nested_cv"]:
         print("\nNested cross-validation started...")
-        cv_train = TrainNCV(dataset, args["model"], n_threads=args["n_threads"], std_pred=std_pred)
+        cv_train = TrainNCV(dataset, args["model"], params=loaded_params, n_threads=args["n_threads"], std_pred=std_pred)
     else:
         print("\nCross-validation started...")
         cv_train = TrainCV(dataset, args["model"], std_pred=std_pred)
@@ -407,6 +460,8 @@ def Main():
 
     if args["nested_cv"]:
         cv_test["best_params"] = cv_train["best_params"]
+        cv_test["pred"] = cv_train["pred"]
+        cv_test["true"] = cv_train["true"]
         if args["model"] != "lasso":
             cv_test["gs_results"] = cv_train["gs_results"]
 
@@ -428,17 +483,17 @@ def Main():
                                        ff_step_size=args["step_size"],
                                        ff_frag_size=args["frag_size"],
                                        ff_horizon=args["horizon"])
-        eval_scores = EstimateIndividualWeights(cv_train, dataset_indv)
+        indv_true, indv_pred = EstimateIndividualWeights(cv_train, dataset_indv)
     else:
-        eval_scores = MatchIndividualWeights(cv_train)
-    cv_test["eval_fold_rmse"] = eval_scores
-    cv_test["eval_mean_rmse"] = np.mean(eval_scores)
+        indv_true, indv_pred = MatchIndividualWeights(cv_train)
+
+    eval_scores = GetMetrics(indv_true, indv_pred)
+    for metrics_key, metrics_values in eval_scores.items():
+        cv_test["eval_fold_" + metrics_key] = metrics_values
+        cv_test["eval_mean_" + metrics_key] = np.mean(metrics_values)
 
     if args["save_out"]:
         cv_test["args"] = args
-        file_code = "_" + str(args["pig_count"]) + "-" + str(args["sample_rate"]).replace(".",",")
-        validation_type = "ncv" if args["nested_cv"] else "cv"
-        model_name = validation_type + "_" + args["model"] + "_" + args["format_mode"]
         os.makedirs("model_states_forecast", exist_ok=True)
         with open("model_states_forecast/" + model_name + file_code + ".dat", "wb") as fh:
             pickle.dump(cv_test, fh)
