@@ -12,7 +12,7 @@ SAVEFIG_DPI = 350
 FIGURE_COLORS = ["red", "blue", "limegreen", "purple", "orange", 
                  "brown", "darkred", "darkblue", "green"]
 MODEL_COLORS = {"gb":"red", "mlp":"blue", "rf":"limegreen", "svm_nys":"purple", "svm_rbf":"brown",
-                "gb_pr":"darkred", "mlp_pr":"darkblue", "rf_pr":"green"}
+                "gb_pr":"darkred", "mlp_pr":"darkblue", "rf_pr":"green", "linear":"darkturquoise"}
 
 def PlotRawSeries(group_mat, mode="scatter"):
     # mpl.rcParams["figure.dpi"] = FIGURE_DPI
@@ -187,6 +187,56 @@ def PlotComparisonCombo(true_to_pred, true_series, pred_series, save_fig=False):
     else:
         plt.show()
 
+def PlotBWComparison(true_to_pred, true_series, pred_series, scores, save_fig=False):
+    fig, ax = plt.subplots(figsize=(12,9), nrows=2, ncols=1)
+    print(scores)
+    print(list(true_to_pred.keys()))
+    print(list(true_to_pred.values()))
+
+    for true_id in true_to_pred.keys():
+        ax[0].plot(true_series[true_id][:,1] / DAY_SECONDS, true_series[true_id][:,0] / 1000, linewidth=1.0, c="grey")
+        ax[1].plot(true_series[true_id][:,1] / DAY_SECONDS, true_series[true_id][:,0] / 1000, linewidth=1.0, c="grey")
+
+    for pred_id in true_to_pred.values():
+        pred_order = np.argsort(pred_series[pred_id][:,1])
+        ax[0].plot(pred_series[pred_id][pred_order,1] / DAY_SECONDS, 
+                   pred_series[pred_id][pred_order,0] / 1000, linestyle=":", linewidth=2.0, c="grey")
+        ax[1].plot(pred_series[pred_id][pred_order,1] / DAY_SECONDS, 
+                   pred_series[pred_id][pred_order,0] / 1000, linestyle=":", linewidth=2.0, c="grey")
+
+    best_index_true = list(true_to_pred.keys())[np.argmin(scores)]
+    best_index_pred = list(true_to_pred.values())[np.argmin(scores)]
+    worst_index_true = list(true_to_pred.keys())[np.argmax(scores)]
+    worst_index_pred = list(true_to_pred.values())[np.argmax(scores)]
+    pred_order = np.argsort(pred_series[best_index_pred][:,1])
+    ax[0].plot(true_series[best_index_true][:,1] / DAY_SECONDS, true_series[best_index_true][:,0] / 1000, linewidth=1.0, c="c")
+    ax[0].plot(pred_series[best_index_pred][pred_order,1] / DAY_SECONDS, 
+               pred_series[best_index_pred][pred_order,0] / 1000, linestyle=":", linewidth=2.0, c="g")
+
+    pred_order = np.argsort(pred_series[worst_index_pred][:,1])
+    ax[1].plot(true_series[worst_index_true][:,1] / DAY_SECONDS, true_series[worst_index_true][:,0] / 1000, linewidth=1.0, c="b")
+    ax[1].plot(pred_series[worst_index_pred][pred_order,1] / DAY_SECONDS, 
+               pred_series[worst_index_pred][pred_order,0] / 1000, linestyle=":", linewidth=2.0, c="r")
+
+    ax[0].set_xlabel("Time (days)")
+    ax[0].set_ylabel("Weight (Kg)")
+    txt_1 = plt.text(0.02, 0.8, "A", fontsize=50, transform=ax[0].transAxes)
+    txt_1.set_in_layout(False)
+    ax[1].set_xlabel("Time (days)")
+    ax[1].set_ylabel("Weight (Kg)")
+    txt_2 = plt.text(0.02, 0.8, "B", fontsize=50, transform=ax[1].transAxes)
+    txt_2.set_in_layout(False)
+    plt.xlim((-1,36))
+    ax[0].spines["right"].set_visible(False)
+    ax[0].spines["top"].set_visible(False)
+    ax[1].spines["right"].set_visible(False)
+    ax[1].spines["top"].set_visible(False)
+    plt.tight_layout()
+    if save_fig:
+        plt.savefig("plots/pident_comparison_plot_combo.jpg", dpi=SAVEFIG_DPI)
+    else:
+        plt.show()
+
 def PlotTrajectoryTruths(true_to_pred, pred_series, true_mat, pred_mat):
     mpl.rcParams["figure.dpi"] = FIGURE_DPI
     tp = true_mat * pred_mat
@@ -251,6 +301,7 @@ def PlotBenchmarkComparison(mean_results, err_results, var_names, var_ranges, x_
     series_length = 35
 
     model_index = 0
+    all_scores = list()
     for model_name, model_results in mean_results.items():
         model_errors = err_results[model_name]
         if model_name[-4:] == "-ncv":
@@ -264,18 +315,25 @@ def PlotBenchmarkComparison(mean_results, err_results, var_names, var_ranges, x_
                 result_code = str(x_value) + "-" + str(subplot_value).replace(".",",") + "-" + str(series_length)
                 plot_values.append(model_results[result_code])
                 plot_errors.append(model_errors[result_code])
+                all_scores.append(model_results[result_code])
             try:
                 # ax_l[i].plot(var_ranges[x_index], plot_values, c=FIGURE_COLORS[model_index], label=model_name)
                 ax_l[i].errorbar(var_ranges[x_index], plot_values, yerr=plot_errors, 
                                  c=MODEL_COLORS[model_label], label=model_label, capsize=5.0)
                 ax_l[i].title.set_text(var_names[subplot_index] + ": " + str(subplot_value))
                 ax_l[i].yaxis.grid(True)
+                ax_l[i].set_xticks([10,20,30,40,50])
             except IndexError:
                 continue
         model_index += 1
     
     # for subplot in subplot_order[len(subplot_var_range):]:
     #     fig.delaxes(ax[subplot[0],subplot[1]])
+    min_score = 1.7 # min(all_scores)
+    max_score = 4.2 # max(all_scores)
+    for plot_i in range(ax_l.shape[0]):
+        ax_l[plot_i].set_ylim(min_score, max_score)
+        # ax_l[plot_i].set_ylim(min_score - 0.5, max_score + 0.5)
 
     fig.text(0.48, 0.02, var_names[x_index], ha="center", va="center", fontsize="medium")
     fig.text(0.02, 0.5, "RMSE (Kg)", ha="center", va="center", rotation="vertical", fontsize="medium")
